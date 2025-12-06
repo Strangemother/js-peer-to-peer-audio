@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Sender</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <h1>Audio Sender (Microphone)</h1>
+    <p class="version">Version 3.1</p>
+    <button id="startBtn" class="btn-sender">Start Streaming</button>
+    <div id="status">Status: Not connected</div>
+    <div id="stats">
+        <div class="stat-row"><span class="stat-label">Bytes Sent:</span><span class="stat-value sender" id="bytesSent">0</span></div>
+        <div class="stat-row"><span class="stat-label">Data Rate:</span><span class="stat-value sender" id="dataRate">0 KB/s</span></div>
+        <div class="stat-row"><span class="stat-label">Duration:</span><span class="stat-value sender" id="duration">0:00</span></div>
+    </div>
+    <div id="errorLog"></div>
+
+    <script src="config.js"></script>
+    <script src="sender.js"></script>
+</body>
+</html>

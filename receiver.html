@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Receiver</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <h1>Audio Receiver (Speakers)</h1>
+    <p class="version">Version 3.1</p>
+    <button id="connectBtn" class="btn-receiver">Connect and Listen</button>
+    <div id="status">Status: Not connected</div>
+    <div id="stats">
+        <div class="stat-row"><span class="stat-label">Bytes Received:</span><span class="stat-value receiver" id="bytesReceived">0</span></div>
+        <div class="stat-row"><span class="stat-label">Data Rate:</span><span class="stat-value receiver" id="dataRate">0 KB/s</span></div>
+        <div class="stat-row"><span class="stat-label">Duration:</span><span class="stat-value receiver" id="duration">0:00</span></div>
+    </div>
+    <div id="errorLog"></div>
+    <audio id="remoteAudio" autoplay playsinline controls muted="false"></audio>
+
+    <script src="config.js"></script>
+    <script src="receiver.js"></script>
+</body>
+</html>
