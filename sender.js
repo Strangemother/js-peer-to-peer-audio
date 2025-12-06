@@ -7,6 +7,9 @@ let wsUrl;
 let bytesSent = 0;
 let startTime;
 let statsInterval;
+let audioContext;
+let audioWorkletNode;
+let rawAudioEnabled = false;
 
 const startBtn = document.getElementById('startBtn');
 const status = document.getElementById('status');
@@ -89,11 +92,56 @@ async function startStreaming() {
             });
             updateStatus('Microphone access granted - waiting for receivers...');
             
+            // Setup raw audio capture for Python receivers
+            await setupRawAudioCapture();
+            
             // Start monitoring stats
             startTime = Date.now();
             document.getElementById('stats').style.display = 'block';
             startStatsMonitoring();
         };
+        
+        // Setup raw audio capture using Web Audio API
+        async function setupRawAudioCapture() {
+            try {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                    sampleRate: CONFIG.audio.sampleRate || 48000
+                });
+                
+                const source = audioContext.createMediaStreamSource(localStream);
+                
+                // Create ScriptProcessorNode for raw audio capture
+                const bufferSize = 4096;
+                const scriptNode = audioContext.createScriptProcessor(bufferSize, 1, 1);
+                
+                scriptNode.onaudioprocess = (audioProcessingEvent) => {
+                    if (!rawAudioEnabled) return;
+                    
+                    const inputBuffer = audioProcessingEvent.inputBuffer;
+                    const inputData = inputBuffer.getChannelData(0);
+                    
+                    // Convert Float32Array to Int16Array (PCM 16-bit)
+                    const pcmData = new Int16Array(inputData.length);
+                    for (let i = 0; i < inputData.length; i++) {
+                        const s = Math.max(-1, Math.min(1, inputData[i]));
+                        pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                    }
+                    
+                    // Send raw PCM data to server (for Python receivers)
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(pcmData.buffer);
+                    }
+                };
+                
+                source.connect(scriptNode);
+                scriptNode.connect(audioContext.destination);
+                rawAudioEnabled = true;
+                
+                console.log('Raw audio capture enabled');
+            } catch (error) {
+                console.error('Failed to setup raw audio capture:', error);
+            }
+        }
         
         // Function to create peer connection for a receiver
         async function createPeerConnectionForReceiver(receiverId) {

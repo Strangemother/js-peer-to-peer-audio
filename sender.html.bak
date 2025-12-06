@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Sender</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #e0e0e0;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            margin: 10px 5px;
+            cursor: pointer;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+        }
+        button:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+        #status {
+            margin-top: 20px;
+            padding: 10px;
+            background: #2a2a2a;
+            border-radius: 4px;
+            border: 1px solid #444;
+        }
+        #stats {
+            margin-top: 20px;
+            padding: 15px;
+            background: #2a2a2a;
+            border-radius: 4px;
+            border: 1px solid #444;
+            font-family: 'Courier New', monospace;
+        }
+        .stat-row {
+            margin: 8px 0;
+            display: flex;
+            justify-content: space-between;
+        }
+        .stat-label {
+            color: #888;
+        }
+        .stat-value {
+            color: #4CAF50;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <h1>Audio Sender (Microphone)</h1>
+    <p style="color: #666; font-size: 12px;">Version 3.0</p>
+    <button id="startBtn">Start Streaming</button>
+    <div id="status">Status: Not connected</div>
+    <div id="stats" style="display: none;">
+        <div class="stat-row"><span class="stat-label">Bytes Sent:</span><span class="stat-value" id="bytesSent">0</span></div>
+        <div class="stat-row"><span class="stat-label">Data Rate:</span><span class="stat-value" id="dataRate">0 KB/s</span></div>
+        <div class="stat-row"><span class="stat-label">Duration:</span><span class="stat-value" id="duration">0:00</span></div>
+    </div>
+    <div id="errorLog" style="margin-top: 20px; padding: 10px; background: #3a1a1a; border: 1px solid #a44; border-radius: 4px; display: none; white-space: pre-wrap; font-size: 12px;"></div>
+
+    <script>
+        const startBtn = document.getElementById('startBtn');
+        const status = document.getElementById('status');
+        const errorLog = document.getElementById('errorLog');
+        
+        let ws;
+        let peerConnection;
+        let localStream;
+        let wsUrl;
+        let bytesSent = 0;
+        let startTime;
+        let statsInterval;
+
+        function logError(message, error) {
+            errorLog.style.display = 'block';
+            const errorText = error ? `${message}\n${error.name}: ${error.message}` : message;
+            errorLog.textContent = errorText;
+            console.error(message, error);
+        }
+
+        const configuration = {
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        };
+
+        function updateStatus(message) {
+            status.textContent = `Status: ${message}`;
+            console.log(message);
+        }
+
+        async function startStreaming() {
+            try {
+                // Connect to signaling server
+                const hostname = window.location.hostname;
+                
+                if (hostname.includes('github.dev')) {
+                    const parts = hostname.split('-8000.');
+                    wsUrl = `wss://${parts[0]}-8765.${parts[1]}`;
+                } else {
+                    wsUrl = 'ws://localhost:8765';
+                }
+                
+                updateStatus('Connecting to server...');
+                ws = new WebSocket(wsUrl);
+                
+                ws.onopen = async () => {
+                    updateStatus('Connected to signaling server');
+                    
+                    // Register as sender
+                    ws.send(JSON.stringify({ type: 'register', id: 'sender' }));
+                    
+                    // Get microphone access with low-latency constraints
+                    localStream = await navigator.mediaDevices.getUserMedia({ 
+                        audio: {
+                            echoCancellation: false,
+                            noiseSuppression: false,
+                            autoGainControl: false,
+                            latency: 0,
+                            sampleRate: 48000,
+                            channelCount: 1
+                        }, 
+                        video: false 
+                    });
+                    updateStatus('Microphone access granted');
+                    
+                    // Create peer connection
+                    peerConnection = new RTCPeerConnection(configuration);
+                    
+                    // Add audio track
+                    localStream.getTracks().forEach(track => {
+                        peerConnection.addTrack(track, localStream);
+                    });
+                    
+                    // Handle ICE candidates
+                    peerConnection.onicecandidate = (event) => {
+                        if (event.candidate) {
+                            ws.send(JSON.stringify({
+                                type: 'ice-candidate',
+                                candidate: event.candidate,
+                                target: 'receiver'
+                            }));
+                        }
+                    };
+                    
+                    // Create and send offer
+                    const offer = await peerConnection.createOffer();
+                    await peerConnection.setLocalDescription(offer);
+                    
+                    ws.send(JSON.stringify({
+                        type: 'offer',
+                        offer: offer,
+                        target: 'receiver'
+                    }));
+                    
+                    updateStatus('Offer sent, waiting for receiver...');
+                    
+                    // Start monitoring stats
+                    startTime = Date.now();
+                    document.getElementById('stats').style.display = 'block';
+                    startStatsMonitoring();
+                };
+                
+                ws.onmessage = async (event) => {
+                    const data = JSON.parse(event.data);
+                    bytesSent += event.data.length;
+                    
+                    if (data.type === 'answer') {
+                        await peerConnection.setRemoteDescription(data.answer);
+                        updateStatus('Connected! Streaming audio...');
+                    } else if (data.type === 'ice-candidate') {
+                        await peerConnection.addIceCandidate(data.candidate);
+                    }
+                };
+                
+                ws.onerror = (error) => {
+                    updateStatus('WebSocket error - is server running?');
+                    logError('WebSocket connection failed. Trying to connect to: ' + wsUrl, error);
+                };
+                
+                ws.onclose = () => {
+                    updateStatus('Disconnected from server');
+                };
+                
+                startBtn.disabled = true;
+                
+            } catch (error) {
+                updateStatus(`Error: ${error.message}`);
+                logError('Startup error', error);
+            }
+        }
+
+        function startStatsMonitoring() {
+            let lastBytes = 0;
+            let lastTime = Date.now();
+            
+            statsInterval = setInterval(async () => {
+                if (peerConnection && peerConnection.getStats) {
+                    const stats = await peerConnection.getStats();
+                    stats.forEach(report => {
+                        if (report.type === 'outbound-rtp' && report.mediaType === 'audio') {
+                            bytesSent = report.bytesSent || 0;
+                        }
+                    });
+                }
+                
+                // Calculate rate
+                const now = Date.now();
+                const timeDiff = (now - lastTime) / 1000;
+                const bytesDiff = bytesSent - lastBytes;
+                const rate = timeDiff > 0 ? (bytesDiff / timeDiff / 1024).toFixed(2) : 0;
+                
+                lastBytes = bytesSent;
+                lastTime = now;
+                
+                // Update display
+                document.getElementById('bytesSent').textContent = formatBytes(bytesSent);
+                document.getElementById('dataRate').textContent = rate + ' KB/s';
+                
+                const elapsed = Math.floor((now - startTime) / 1000);
+                const mins = Math.floor(elapsed / 60);
+                const secs = elapsed % 60;
+                document.getElementById('duration').textContent = `${mins}:${secs.toString().padStart(2, '0')}`;
+            }, 1000);
+        }
+        
+        function formatBytes(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1048576) return (bytes / 1024).toFixed(2) + ' KB';
+            return (bytes / 1048576).toFixed(2) + ' MB';
+        }
+
+        startBtn.addEventListener('click', startStreaming);
+    </script>
+</body>
+</html>
