@@ -3,7 +3,7 @@ Simple standalone Python client for receiving and processing messages.
 Uses Flask for HTTP communication and threading for non-blocking work.
 """
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template
 from threading import Thread, Timer
 import logging
 import requests
@@ -39,14 +39,13 @@ class Client:
     def _setup_routes(self):
         """Setup Flask routes for receiving messages."""
         
-        @self.app.route('/', methods=['GET'])
+        @self.app.route('/', methods=['GET', 'POST'])
         def home():
-            """Home page with client info."""
-            return jsonify({
-                'hello': f'I am {self.name}',
-                'name': self.name,
-                'port': self.port
-            }), 200
+            """Home page with client info and message form."""
+            if request.method == 'POST':
+                message = request.form.get('message', '')
+                return jsonify({'status': 'received', 'message': 'thanks'}), 202
+            return render_template('home.html', client_name=self.name, port=self.port)
         
         @self.app.route('/message', methods=['POST'])
         def receive_message():
