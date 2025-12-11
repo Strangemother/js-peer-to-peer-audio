@@ -79,11 +79,38 @@ async function startStreaming() {
         updateStatus('Connecting to server...');
         ws = new WebSocket(wsUrl);
         
+        // Setup message handler BEFORE onopen to catch early messages
+        ws.onmessage = async (event) => {
+            const data = JSON.parse(event.data);
+            console.log('Sender received:', data.type);
+            
+            if (data.type === 'new-receiver') {
+                // New receiver connected, create peer connection for it
+                const receiverId = data.receiverId;
+                await createPeerConnectionForReceiver(receiverId);
+            } else if (data.type === 'answer') {
+                // Answer from a receiver
+                const receiverId = data.from;
+                if (peerConnections[receiverId]) {
+                    await peerConnections[receiverId].setRemoteDescription(data.answer);
+                    const count = Object.keys(peerConnections).length;
+                    updateStatus(`Connected! Streaming to ${count} receiver(s)...`);
+                }
+            } else if (data.type === 'ice-candidate') {
+                // ICE candidate from a receiver
+                const receiverId = data.from;
+                if (peerConnections[receiverId]) {
+                    await peerConnections[receiverId].addIceCandidate(data.candidate);
+                }
+            }
+        };
+        
         ws.onopen = async () => {
             updateStatus('Connected to signaling server');
             
-            // Register as sender
-            ws.send(JSON.stringify({ type: 'register', id: 'sender' }));
+            // Register as sender with unique ID
+            const senderId = `sender-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+            ws.send(JSON.stringify({ type: 'register', id: senderId }));
             
             // Get microphone access with low-latency constraints
             localStream = await navigator.mediaDevices.getUserMedia({ 
@@ -179,30 +206,6 @@ async function startStreaming() {
             
             console.log(`Offer sent to ${receiverId}`);
         }
-        
-        ws.onmessage = async (event) => {
-            const data = JSON.parse(event.data);
-            
-            if (data.type === 'new-receiver') {
-                // New receiver connected, create peer connection for it
-                const receiverId = data.receiverId;
-                await createPeerConnectionForReceiver(receiverId);
-            } else if (data.type === 'answer') {
-                // Answer from a receiver
-                const receiverId = data.from;
-                if (peerConnections[receiverId]) {
-                    await peerConnections[receiverId].setRemoteDescription(data.answer);
-                    const count = Object.keys(peerConnections).length;
-                    updateStatus(`Connected! Streaming to ${count} receiver(s)...`);
-                }
-            } else if (data.type === 'ice-candidate') {
-                // ICE candidate from a receiver
-                const receiverId = data.from;
-                if (peerConnections[receiverId]) {
-                    await peerConnections[receiverId].addIceCandidate(data.candidate);
-                }
-            }
-        };
         
         ws.onerror = (error) => {
             updateStatus('WebSocket error - is server running?');

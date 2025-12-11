@@ -8,6 +8,7 @@ import json
 import websockets
 
 clients = {}
+senders = set()  # Track multiple senders
 receivers = set()
 python_receivers = set()  # Track Python audio receivers separately
 
@@ -55,15 +56,30 @@ async def handler(websocket):
                                 'receiverId': client_id
                             }))
                 else:
-                    print(f"Sender registered: {client_id}")
-                    
-                    # If this is sender and receivers already exist, notify sender about them
-                    if client_id == 'sender':
+                    # Track senders
+                    if client_id == 'sender' or client_id.startswith('sender-'):
+                        if client_id == 'sender':
+                            client_id = f"sender-{id(websocket)}"
+                            clients[client_id] = websocket
+                        senders.add(client_id)
+                        print(f"Sender registered: {client_id} (Total senders: {len(senders)})")
+                        
+                        # Notify this sender about all existing receivers
                         for receiver_id in list(receivers):
-                            await clients['sender'].send(json.dumps({
+                            await clients[client_id].send(json.dumps({
                                 'type': 'new-receiver',
                                 'receiverId': receiver_id
                             }))
+                        
+                        # Notify all receivers about this new sender
+                        for receiver_id in list(receivers):
+                            if receiver_id in clients:
+                                await clients[receiver_id].send(json.dumps({
+                                    'type': 'new-sender',
+                                    'senderId': client_id
+                                }))
+                    else:
+                        print(f"Client registered: {client_id}")
                     
             elif data['type'] in ['offer', 'ice-candidate']:
                 # Send to specific target receiver or sender
@@ -72,7 +88,7 @@ async def handler(websocket):
                     modified_data = data.copy()
                     modified_data['from'] = client_id
                     await clients[target_id].send(json.dumps(modified_data))
-                    print(f"Relayed {data['type']} from {client_id} to {target_id}")
+                    # print(f"Relayed {data['type']} from {client_id} to {target_id}")
                         
             elif data['type'] == 'answer':
                 # Relay answer from receiver back to sender
@@ -93,6 +109,19 @@ async def handler(websocket):
             elif client_id.startswith('receiver-'):
                 receivers.discard(client_id)
                 print(f"Browser receiver disconnected: {client_id} (Remaining: {len(receivers)})")
+            elif client_id.startswith('sender-'):
+                senders.discard(client_id)
+                print(f"Sender disconnected: {client_id} (Remaining: {len(senders)})")
+                # Notify receivers that this sender disconnected
+                for receiver_id in list(receivers):
+                    if receiver_id in clients:
+                        try:
+                            await clients[receiver_id].send(json.dumps({
+                                'type': 'sender-disconnected',
+                                'senderId': client_id
+                            }))
+                        except:
+                            pass
             else:
                 print(f"Client disconnected: {client_id}")
             del clients[client_id]
