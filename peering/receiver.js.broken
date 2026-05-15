@@ -7,7 +7,6 @@ let receiverId;
 let bytesReceived = 0;
 let startTime;
 let statsInterval;
-let isConnected = false;
 
 const connectBtn = document.getElementById('connectBtn');
 const status = document.getElementById('status');
@@ -46,6 +45,7 @@ function startStatsMonitoring() {
             });
         }
         
+        // Calculate rate
         const now = Date.now();
         const timeDiff = (now - lastTime) / 1000;
         const bytesDiff = bytesReceived - lastBytes;
@@ -54,6 +54,7 @@ function startStatsMonitoring() {
         lastBytes = bytesReceived;
         lastTime = now;
         
+        // Update display
         document.getElementById('bytesReceived').textContent = formatBytes(bytesReceived);
         document.getElementById('dataRate').textContent = rate + ' KB/s';
         
@@ -66,6 +67,7 @@ function startStatsMonitoring() {
 
 async function connectAndListen() {
     try {
+        // Connect to signaling server
         wsUrl = CONFIG.websocket.getUrl();
         
         updateStatus('Connecting to server...');
@@ -73,52 +75,52 @@ async function connectAndListen() {
         
         ws.onopen = () => {
             updateStatus('Connected to signaling server, waiting for sender...');
+            
+            // Register as receiver with unique ID
             receiverId = `receiver-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-            console.log('Registered as:', receiverId);
             ws.send(JSON.stringify({ type: 'register', id: receiverId }));
         };
         
         ws.onmessage = async (event) => {
             const data = JSON.parse(event.data);
-            console.log('Receiver got message:', data.type);
+            console.log('Receiver got message:', data.type, data);
             
             if (data.type === 'offer') {
-                // Ignore duplicate offers if already connected
-                if (isConnected) {
-                    console.log('Ignoring duplicate offer - already connected');
-                    return;
-                }
-                
                 updateStatus('Received offer, setting up connection...');
                 
+                // Only create peer connection if we don't have one yet
                 if (!peerConnection) {
+                    // Create peer connection
                     peerConnection = new RTCPeerConnection(CONFIG.webrtc);
-                    console.log('Created peer connection');
                     
+                    // Handle incoming audio tracks
                     peerConnection.ontrack = (event) => {
-                        console.log('Received track');
-                        isConnected = true;
+                        console.log('Received track:', event);
                         updateStatus('Receiving audio stream!');
                         remoteAudio.srcObject = event.streams[0];
+                        // Minimize latency
                         remoteAudio.volume = CONFIG.playback.volume;
                         if ('setSinkId' in remoteAudio) {
                             remoteAudio.setSinkId(CONFIG.playback.defaultSinkId).catch(e => console.log('setSinkId not supported'));
                         }
+                        // Ensure playback starts (mobile browsers may block autoplay)
                         remoteAudio.play().catch(e => {
                             updateStatus('Tap to play audio');
+                            // Add click listener to start playback
                             document.body.addEventListener('click', () => {
                                 remoteAudio.play();
                             }, { once: true });
                         });
                         
+                        // Start monitoring stats
                         startTime = Date.now();
                         document.getElementById('stats').style.display = 'block';
                         startStatsMonitoring();
                     };
                     
+                    // Handle ICE candidates
                     peerConnection.onicecandidate = (event) => {
                         if (event.candidate) {
-                            console.log('Sending ICE candidate');
                             ws.send(JSON.stringify({
                                 type: 'ice-candidate',
                                 candidate: event.candidate,
@@ -129,11 +131,11 @@ async function connectAndListen() {
                     };
                 }
                 
+                // Set remote description and create answer
                 await peerConnection.setRemoteDescription(data.offer);
                 const answer = await peerConnection.createAnswer();
                 await peerConnection.setLocalDescription(answer);
                 
-                console.log('Sending answer');
                 ws.send(JSON.stringify({
                     type: 'answer',
                     answer: answer,
@@ -144,7 +146,63 @@ async function connectAndListen() {
                 updateStatus('Answer sent, establishing connection...');
                 
             } else if (data.type === 'ice-candidate') {
-                console.log('Received ICE candidate');
+                if (peerConnection) {
+                    await peerConnection.addIceCandidate(data.candidate);
+                }
+            }
+        };
+                
+                // Handle incoming audio tracks
+                peerConnection.ontrack = (event) => {
+                    updateStatus('Receiving audio stream!');
+                    remoteAudio.srcObject = event.streams[0];
+                    // Minimize latency
+                    remoteAudio.volume = CONFIG.playback.volume;
+                    if ('setSinkId' in remoteAudio) {
+                        remoteAudio.setSinkId(CONFIG.playback.defaultSinkId).catch(e => console.log('setSinkId not supported'));
+                    }
+                    // Ensure playback starts (mobile browsers may block autoplay)
+                    remoteAudio.play().catch(e => {
+                        updateStatus('Tap to play audio');
+                        // Add click listener to start playback
+                        document.body.addEventListener('click', () => {
+                            remoteAudio.play();
+                        }, { once: true });
+                    });
+                    
+                    // Start monitoring stats
+                    startTime = Date.now();
+                    document.getElementById('stats').style.display = 'block';
+                    startStatsMonitoring();
+                };
+                
+                // Handle ICE candidates
+                peerConnection.onicecandidate = (event) => {
+                    if (event.candidate) {
+                        ws.send(JSON.stringify({
+                            type: 'ice-candidate',
+                            candidate: event.candidate,
+                            target: 'sender',
+                            from: receiverId
+                        }));
+                    }
+                };
+                
+                // Set remote description and create answer
+                await peerConnection.setRemoteDescription(data.offer);
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                
+                ws.send(JSON.stringify({
+                    type: 'answer',
+                    answer: answer,
+                    target: 'sender',
+                    from: receiverId
+                }));
+                
+                updateStatus('Answer sent, establishing connection...');
+                
+            } else if (data.type === 'ice-candidate') {
                 if (peerConnection) {
                     await peerConnection.addIceCandidate(data.candidate);
                 }

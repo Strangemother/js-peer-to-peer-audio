@@ -7,6 +7,9 @@ let wsUrl;
 let bytesSent = 0;
 let startTime;
 let statsInterval;
+let audioContext;
+let audioWorkletNode;
+let rawAudioEnabled = false;
 
 const startBtn = document.getElementById('startBtn');
 const status = document.getElementById('status');
@@ -76,11 +79,38 @@ async function startStreaming() {
         updateStatus('Connecting to server...');
         ws = new WebSocket(wsUrl);
         
+        // Setup message handler BEFORE onopen to catch early messages
+        ws.onmessage = async (event) => {
+            const data = JSON.parse(event.data);
+            console.log('Sender received:', data.type);
+            
+            if (data.type === 'new-receiver') {
+                // New receiver connected, create peer connection for it
+                const receiverId = data.receiverId;
+                await createPeerConnectionForReceiver(receiverId);
+            } else if (data.type === 'answer') {
+                // Answer from a receiver
+                const receiverId = data.from;
+                if (peerConnections[receiverId]) {
+                    await peerConnections[receiverId].setRemoteDescription(data.answer);
+                    const count = Object.keys(peerConnections).length;
+                    updateStatus(`Connected! Streaming to ${count} receiver(s)...`);
+                }
+            } else if (data.type === 'ice-candidate') {
+                // ICE candidate from a receiver
+                const receiverId = data.from;
+                if (peerConnections[receiverId]) {
+                    await peerConnections[receiverId].addIceCandidate(data.candidate);
+                }
+            }
+        };
+        
         ws.onopen = async () => {
             updateStatus('Connected to signaling server');
             
-            // Register as sender
-            ws.send(JSON.stringify({ type: 'register', id: 'sender' }));
+            // Register as sender with unique ID
+            const senderId = `sender-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+            ws.send(JSON.stringify({ type: 'register', id: senderId }));
             
             // Get microphone access with low-latency constraints
             localStream = await navigator.mediaDevices.getUserMedia({ 
@@ -89,11 +119,56 @@ async function startStreaming() {
             });
             updateStatus('Microphone access granted - waiting for receivers...');
             
+            // Setup raw audio capture for Python receivers
+            await setupRawAudioCapture();
+            
             // Start monitoring stats
             startTime = Date.now();
             document.getElementById('stats').style.display = 'block';
             startStatsMonitoring();
         };
+        
+        // Setup raw audio capture using Web Audio API
+        async function setupRawAudioCapture() {
+            try {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                    sampleRate: CONFIG.audio.sampleRate || 48000
+                });
+                
+                const source = audioContext.createMediaStreamSource(localStream);
+                
+                // Create ScriptProcessorNode for raw audio capture
+                const bufferSize = 4096;
+                const scriptNode = audioContext.createScriptProcessor(bufferSize, 1, 1);
+                
+                scriptNode.onaudioprocess = (audioProcessingEvent) => {
+                    if (!rawAudioEnabled) return;
+                    
+                    const inputBuffer = audioProcessingEvent.inputBuffer;
+                    const inputData = inputBuffer.getChannelData(0);
+                    
+                    // Convert Float32Array to Int16Array (PCM 16-bit)
+                    const pcmData = new Int16Array(inputData.length);
+                    for (let i = 0; i < inputData.length; i++) {
+                        const s = Math.max(-1, Math.min(1, inputData[i]));
+                        pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                    }
+                    
+                    // Send raw PCM data to server (for Python receivers)
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(pcmData.buffer);
+                    }
+                };
+                
+                source.connect(scriptNode);
+                scriptNode.connect(audioContext.destination);
+                rawAudioEnabled = true;
+                
+                console.log('Raw audio capture enabled');
+            } catch (error) {
+                console.error('Failed to setup raw audio capture:', error);
+            }
+        }
         
         // Function to create peer connection for a receiver
         async function createPeerConnectionForReceiver(receiverId) {
@@ -131,30 +206,6 @@ async function startStreaming() {
             
             console.log(`Offer sent to ${receiverId}`);
         }
-        
-        ws.onmessage = async (event) => {
-            const data = JSON.parse(event.data);
-            
-            if (data.type === 'new-receiver') {
-                // New receiver connected, create peer connection for it
-                const receiverId = data.receiverId;
-                await createPeerConnectionForReceiver(receiverId);
-            } else if (data.type === 'answer') {
-                // Answer from a receiver
-                const receiverId = data.from;
-                if (peerConnections[receiverId]) {
-                    await peerConnections[receiverId].setRemoteDescription(data.answer);
-                    const count = Object.keys(peerConnections).length;
-                    updateStatus(`Connected! Streaming to ${count} receiver(s)...`);
-                }
-            } else if (data.type === 'ice-candidate') {
-                // ICE candidate from a receiver
-                const receiverId = data.from;
-                if (peerConnections[receiverId]) {
-                    await peerConnections[receiverId].addIceCandidate(data.candidate);
-                }
-            }
-        };
         
         ws.onerror = (error) => {
             updateStatus('WebSocket error - is server running?');
